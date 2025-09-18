@@ -85,10 +85,8 @@ LLMCallGateway 是一个基于 LiteLLM 构建的专业 LLM API 网关服务。�
 
 2. **创建虚拟环境**（推荐）
    ```bash
-   python -m venv venv
-   source venv/bin/activate  # Linux/Mac
-   # 或者
-   venv\Scripts\activate     # Windows
+ conda create -n LLMCallGateway python=3.13
+ conda activate LLMCallGateway
    ```
 
 3. **安装依赖**
