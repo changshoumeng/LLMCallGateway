@@ -71,7 +71,7 @@ LLMCallGateway 是一个基于 LiteLLM 构建的专业 LLM API 网关服务。�
 
 ### 📋 前置要求
 
-- Python 3.8 或更高版本
+- 建议使用python=3.13 以上版本
 - pip 包管理器
 - 有效的 LLM API 密钥（OpenAI、Anthropic、Google 等）
 
