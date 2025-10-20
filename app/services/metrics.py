@@ -26,6 +26,7 @@ class RequestMetrics:
     total_tokens: int = 0
     user_id: Optional[str] = None
     stream: bool = False
+    request_type: str = "chat"  # chat, embedding
     
     @property
     def duration(self) -> float:
@@ -74,7 +75,8 @@ class MetricsCollector:
                 model=context.model,
                 start_time=context.start_time,
                 user_id=context.user_id,
-                stream=context.stream
+                stream=context.stream,
+                request_type=context.request_type
             )
             self._active_requests[context.request_id] = metrics
             return metrics
@@ -82,7 +84,8 @@ class MetricsCollector:
     def complete_request(self, request_id: str, success: bool = True,
                         error_message: Optional[str] = None,
                         prompt_tokens: int = 0,
-                        completion_tokens: int = 0) -> Optional[RequestMetrics]:
+                        completion_tokens: int = 0,
+                        total_tokens: Optional[int] = None) -> Optional[RequestMetrics]:
         """完成请求记录"""
         with self._lock:
             if request_id not in self._active_requests:
@@ -94,7 +97,8 @@ class MetricsCollector:
             metrics.error_message = error_message
             metrics.prompt_tokens = prompt_tokens
             metrics.completion_tokens = completion_tokens
-            metrics.total_tokens = prompt_tokens + completion_tokens
+            # 使用提供的total_tokens，否则计算出来
+            metrics.total_tokens = total_tokens if total_tokens is not None else (prompt_tokens + completion_tokens)
             
             # 添加到历史记录
             self._completed_requests.append(metrics)

@@ -118,14 +118,36 @@ LLM交互专用日志记录器 - 专注于下游服务商的请求/响应跟踪
             "status": "pending",
             "error": None
         }
-    
+
+    def _truncate_embedding_fields(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """截断embedding字段值，保留前10个字符以减少日志体积"""
+        import copy
+
+        truncated_data = copy.deepcopy(data)
+
+        # 处理embeddings响应格式
+        if isinstance(truncated_data, dict) and "data" in truncated_data:
+            data_list = truncated_data["data"]
+            if isinstance(data_list, list):
+                for item in data_list:
+                    if isinstance(item, dict) and "embedding" in item:
+                        embedding = item["embedding"]
+                        if isinstance(embedding, str) and len(embedding) > 10:
+                            # 截断base64格式的embedding
+                            item["embedding"] = embedding[:10] + "..."
+                        elif isinstance(embedding, list) and len(embedding) > 3:
+                            # 截断float数组格式的embedding，只保留前3个元素
+                            item["embedding"] = embedding[:3] + ["..."]
+
+        return truncated_data
+
     def complete_interaction(self, request_id: str, response_data: Dict[str, Any], processing_time: float, success: bool = True, error: str = None) -> None:
         """完成一个交互记录并输出JSON"""
         if request_id not in self.interactions:
             return
             
         interaction = self.interactions[request_id]
-        interaction["downstream_response"] = response_data
+        interaction["downstream_response"] = self._truncate_embedding_fields(response_data)
         interaction["processing_time"] = processing_time
         interaction["status"] = "success" if success else "error"
         if error:

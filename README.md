@@ -39,8 +39,9 @@ LLMCallGateway 是一个基于 LiteLLM 构建的专业 LLM API 网关服务。�
 - 🏗️ **模块化架构**: 专业的项目结构，易于维护和扩展
 
 ### ⚡ 技术特性
-- 🔄 **完全兼容**: 100% 兼容 OpenAI API 格式，支持聊天补全和模型列表
+- 🔄 **完全兼容**: 100% 兼容 OpenAI API 格式，支持聊天补全、文本嵌入和模型列表
 - 📡 **流式支持**: 支持流式和非流式响应，实时交互体验
+- 🧠 **智能嵌入**: 支持多种文本嵌入模型，批量处理，完整向量输出
 - ⚡ **高性能**: 基于 FastAPI + Uvicorn，异步处理，高并发支持
 - 🌐 **CORS 支持**: 开箱即用的跨域支持，前端可直接调用
 - 🔒 **安全优先**: 环境变量管理，防止敏感信息泄露
@@ -61,11 +62,17 @@ LLMCallGateway 是一个基于 LiteLLM 构建的专业 LLM API 网关服务。�
 
 ### 🔍 支持的模型
 基于 LiteLLM，支持多种模型提供商：
+
+#### 💬 聊天模型
 - **OpenAI**: gpt-4o-mini, gpt-4o, gpt-4-turbo, gpt-3.5-turbo
 - **Anthropic**: claude-3-sonnet, claude-3-haiku
 - **Google**: gemini-pro, gemini-pro-vision
 - **Mistral**: mistral-small, mistral-medium, mistral-large
 - **其他**: command-nightly, llama-2-70b-chat 等
+
+#### 🧠 嵌入模型
+- **OpenAI**: text-embedding-3-small, text-embedding-3-large, text-embedding-ada-002
+- **其他兼容模型**: 支持所有 LiteLLM 兼容的嵌入模型
 
 ## 🚀 快速开始
 
@@ -177,6 +184,25 @@ stream = client.chat.completions.create(
 for chunk in stream:
     if chunk.choices[0].delta.content:
         print(chunk.choices[0].delta.content, end="")
+
+# 文本嵌入
+response = client.embeddings.create(
+    model="text-embedding-3-small",
+    input="Hello, world! This is a test."
+)
+print(f"向量维度: {len(response.data[0].embedding)}")
+print(f"Token使用: {response.usage.total_tokens}")
+
+# 批量文本嵌入
+response = client.embeddings.create(
+    model="text-embedding-3-small",
+    input=[
+        "第一段文本：人工智能的发展",
+        "第二段文本：自然语言处理技术"
+    ]
+)
+for i, embedding_data in enumerate(response.data):
+    print(f"文本 {i+1} 向量维度: {len(embedding_data.embedding)}")
 ```
 
 #### cURL 示例
@@ -195,6 +221,27 @@ curl -X POST "http://localhost:8728/v1/chat/completions" \
       }
     ],
     "stream": false
+  }'
+
+# 文本嵌入请求
+curl -X POST "http://localhost:8728/v1/embeddings" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer your_api_key" \
+  -d '{
+    "input": "Hello, world! This is a test.",
+    "model": "text-embedding-3-small"
+  }'
+
+# 批量文本嵌入请求
+curl -X POST "http://localhost:8728/v1/embeddings" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer your_api_key" \
+  -d '{
+    "input": [
+      "第一段文本：人工智能的发展",
+      "第二段文本：自然语言处理技术"
+    ],
+    "model": "text-embedding-3-small"
   }'
 ```
 
@@ -256,23 +303,58 @@ LLMCallGateway 提供分层的专业日志系统：
 #### 📝 日志特性
 - **分离式日志**: 系统日志与 LLM 交互日志分别存储
 - **请求追踪**: 每个请求分配唯一 ID，便于追踪完整生命周期
-- **详细记录**: 完整记录用户 Prompt 和 LLM 响应内容
-- **下游跟踪**: 详细记录与下游 LLM API 的完整交互过程
-- **Token 统计**: 精确统计输入、输出和总 Token 消耗
-- **性能监控**: 记录处理时延、成功率等关键指标
+- **结构化格式**: 美观的 JSON 格式，易于解析和分析
+- **下游专注**: 专门记录与下游 LLM API 服务商的完整交互数据
+- **完整请求**: 记录发送给下游的完整请求参数和内容
+- **完整响应**: 记录下游返回的完整响应数据和元信息
+- **性能监控**: 精确记录处理时间和请求状态
 - **智能轮转**: 自动日志轮转和清理
 - **UTF-8 支持**: 完美支持中文字符
 
 #### 📊 LLM 交互日志示例
-```
-2024-09-18 13:05:22.123 | LLM | [a1b2c3d4] ▶️ REQUEST START | Model: gpt-4o-mini | User: 你好，请介绍一下自己
-2024-09-18 13:05:22.125 | LLM | [a1b2c3d4] ⬇️ DOWNSTREAM REQUEST | Provider: litellm
-2024-09-18 13:05:22.126 | LLM | [a1b2c3d4] 📤 Request Data: {"model": "gpt-4o-mini", "messages": [...]}
-2024-09-18 13:05:23.456 | LLM | [a1b2c3d4] ⬆️ DOWNSTREAM RESPONSE | Provider: litellm | Time: 1.330s
-2024-09-18 13:05:23.457 | LLM | [a1b2c3d4] 📥 Response Data: {"id": "chatcmpl-xyz", "choices": [...]}
-2024-09-18 13:05:23.458 | LLM | [a1b2c3d4] ✅ RESPONSE COMPLETE | Status: SUCCESS | Time: 1.335s
-2024-09-18 13:05:23.459 | LLM | [a1b2c3d4] 🤖 AI Response: 你好！我是一个AI助手...
-2024-09-18 13:05:23.460 | LLM | [a1b2c3d4] 📊 Token Usage: Input=15, Output=45, Total=60
+```json
+{
+  "timestamp": "2025-09-18T17:41:03.169064",
+  "request_id": "a1b2c3d4",
+  "downstream_request": {
+    "provider": "litellm",
+    "model": "gpt-4o-mini",
+    "messages": [
+      {
+        "role": "user",
+        "content": "你好，请介绍一下自己"
+      }
+    ],
+    "stream": false,
+    "temperature": 1.0,
+    "top_p": 1.0,
+    "frequency_penalty": 0.0,
+    "presence_penalty": 0.0,
+    "n": 1
+  },
+  "downstream_response": {
+    "id": "chatcmpl-xyz123",
+    "model": "gpt-4o-mini-2024-07-18",
+    "choices": [
+      {
+        "index": 0,
+        "message": {
+          "role": "assistant",
+          "content": "你好！我是一个AI助手，可以帮助您回答问题、提供信息和协助完成各种任务。"
+        },
+        "finish_reason": "stop"
+      }
+    ],
+    "usage": {
+      "prompt_tokens": 15,
+      "completion_tokens": 25,
+      "total_tokens": 40
+    }
+  },
+  "processing_time": 1.335,
+  "status": "success",
+  "error": null
+}
 ```
 
 ## 🚀 部署

@@ -11,9 +11,10 @@ LLMCallGateway - 专业LLM API网关服务
 
 import time
 from contextlib import asynccontextmanager
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import StreamingResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
@@ -22,7 +23,8 @@ import uvicorn
 from app.core.config import settings
 from app.core.logging import system_logger
 from app.models.api_models import (
-    ChatCompletionRequest, ModelList, Model, HealthResponse, MetricsResponse
+    ChatCompletionRequest, ModelList, Model, HealthResponse, MetricsResponse,
+    EmbeddingRequest, EmbeddingResponse
 )
 from app.services.llm_service import llm_service
 from app.services.metrics import metrics_collector
@@ -94,6 +96,86 @@ async def request_logging_middleware(request: Request, call_next):
     response.headers["X-Service-Version"] = settings.app_version
     
     return response
+
+
+# === 辅助函数 ===
+
+async def preprocess_embedding_data(raw_data: dict) -> dict:
+    """
+    预处理embeddings输入数据，支持自动token解码
+    """
+    import json
+
+    processed_data = raw_data.copy()
+
+    if "input" in processed_data:
+        input_data = processed_data["input"]
+
+        # 处理单个token数组
+        if isinstance(input_data, list) and len(input_data) > 0:
+            if all(isinstance(x, int) for x in input_data):
+                # 尝试解码token数组
+                decoded_text = try_decode_tokens(input_data)
+                if decoded_text:
+                    processed_data["input"] = decoded_text
+                    system_logger.info(f"✅ 自动解码token数组为文本: '{decoded_text[:50]}...'")
+                else:
+                    raise ValueError(
+                        f"检测到tokenized数字数组但无法解码。请发送原始文本字符串而不是token数组。"
+                        f"\n正确格式: '原始文本字符串'"
+                        f"\n错误格式: {input_data[:10]}..."
+                    )
+            # 处理包含token数组的列表
+            elif any(isinstance(item, list) and all(isinstance(x, int) for x in item) for item in input_data if isinstance(item, list)):
+                processed_list = []
+                for item in input_data:
+                    if isinstance(item, list) and all(isinstance(x, int) for x in item):
+                        decoded_text = try_decode_tokens(item)
+                        if decoded_text:
+                            processed_list.append(decoded_text)
+                        else:
+                            raise ValueError(f"无法解码token数组: {item[:10]}...")
+                    else:
+                        processed_list.append(item)
+                processed_data["input"] = processed_list
+                system_logger.info(f"✅ 自动解码列表中的token数组")
+
+    return processed_data
+
+
+def try_decode_tokens(input_data) -> Optional[str]:
+    """
+    尝试将tokenized数组解码为文本
+    """
+    try:
+        import tiktoken
+
+        if isinstance(input_data, list) and len(input_data) > 0:
+            if all(isinstance(x, int) for x in input_data):
+                # 尝试使用不同的编码器解码
+                encoders = ["cl100k_base", "gpt2", "r50k_base", "p50k_base"]
+
+                for encoder_name in encoders:
+                    try:
+                        encoding = tiktoken.get_encoding(encoder_name)
+                        decoded_text = encoding.decode(input_data)
+                        if decoded_text and len(decoded_text.strip()) > 0:
+                            system_logger.info(f"🔄 使用{encoder_name}解码: {len(input_data)} tokens -> 文本")
+                            return decoded_text
+                    except Exception:
+                        continue
+
+                # 如果所有编码器都失败，返回None
+                system_logger.warning(f"⚠️ 无法解码token数组: {input_data[:10]}...")
+                return None
+
+        return None
+    except ImportError:
+        system_logger.warning("⚠️ tiktoken库未安装，无法解码token数组")
+        return None
+    except Exception as e:
+        system_logger.error(f"解码token数组时出错: {e}")
+        return None
 
 
 # === API路由定义 ===
@@ -181,6 +263,47 @@ async def create_chat_completion(request: ChatCompletionRequest, http_request: R
         raise create_error_response(f"请求处理失败: {str(e)}", "completion_error", 500)
 
 
+@app.post("/v1/embeddings", response_model=EmbeddingResponse)
+async def create_embeddings(http_request: Request):
+    """创建文本嵌入 - 支持自动token解码"""
+    try:
+        # 提取用户ID
+        user_id = extract_user_id_from_request(http_request)
+
+        # 获取原始JSON数据
+        raw_data = await http_request.json()
+
+        system_logger.info(f"原始JSON数据: {raw_data}")
+
+        # 智能预处理输入数据
+        processed_data = await preprocess_embedding_data(raw_data)
+
+        # 创建验证后的请求对象
+        try:
+            request = EmbeddingRequest(**processed_data)
+        except Exception as e:
+            system_logger.error(f"请求验证失败: {e}")
+            raise create_error_response(f"请求格式错误: {str(e)}", "invalid_request", 400)
+
+        # 基本验证
+        if not request.input:
+            raise create_error_response("输入文本不能为空", "invalid_request", 400)
+
+        if not request.model:
+            raise create_error_response("模型名称不能为空", "invalid_request", 400)
+
+        # 调用LLM服务
+        result = await llm_service.create_embeddings(request, user_id)
+
+        return result
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        system_logger.error(f"嵌入生成处理失败: {e}")
+        raise create_error_response(f"请求处理失败: {str(e)}", "embedding_error", 500)
+
+
 @app.get("/metrics", response_model=Dict[str, Any])
 async def get_metrics():
     """获取服务指标"""
@@ -230,6 +353,68 @@ async def reset_metrics():
 
 
 # === 错误处理 ===
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    """输入验证异常处理器 - 专门处理422错误"""
+
+    def is_tokenized_input_error(errors):
+        """检测是否是tokenized输入错误"""
+        for error in errors:
+            if ('input' in error.get('loc', []) and
+                error.get('type') == 'string_type' and
+                isinstance(error.get('input'), list) and
+                len(error.get('input', [])) > 0 and
+                all(isinstance(x, int) for x in error.get('input', [])[:10])):  # 检查前10个元素
+                return True
+        return False
+
+    # 检查是否是嵌入接口的错误
+    is_embedding_request = request.url.path == "/v1/embeddings"
+    errors = exc.errors()
+
+    if is_embedding_request and is_tokenized_input_error(errors):
+        # 针对tokenized输入提供专门的错误信息
+        return JSONResponse(
+            status_code=422,
+            content={
+                "error": {
+                    "message": "输入格式错误：检测到tokenized数字数组",
+                    "type": "invalid_request_error",
+                    "code": "invalid_input_format",
+                    "details": "embeddings API需要原始文本字符串，不接受tokenized的数字数组。",
+                    "correct_examples": {
+                        "single_text": '{"input": "Hello world", "model": "text-embedding-3-small"}',
+                        "multiple_texts": '{"input": ["Hello", "World"], "model": "text-embedding-3-small"}'
+                    },
+                    "common_mistakes": [
+                        "❌ 不要发送: {\"input\": [3134, 419, 57086], ...}",
+                        "❌ 不要发送: {\"input\": [[3134, 419]], ...}",
+                        "✅ 应该发送: {\"input\": \"原始文本字符串\", ...}"
+                    ]
+                }
+            }
+        )
+
+    # 通用验证错误处理
+    return JSONResponse(
+        status_code=422,
+        content={
+            "error": {
+                "message": "请求格式验证失败",
+                "type": "validation_error",
+                "details": [
+                    {
+                        "loc": error["loc"],
+                        "msg": error["msg"],
+                        "type": error["type"]
+                    }
+                    for error in errors
+                ]
+            }
+        }
+    )
+
 
 @app.exception_handler(HTTPException)
 async def http_exception_handler(request: Request, exc: HTTPException):
